@@ -63,7 +63,6 @@
 
     <nav class="tabs">
       <button class="tab active" data-tab="per-jd">Per-JD ranking</button>
-      <button class="tab" data-tab="bulk">All JDs × All resumes</button>
       <button class="tab" data-tab="reverse">Best JDs for a resume</button>
     </nav>
 
@@ -87,24 +86,6 @@
 
       <div id="status" class="status"></div>
       <div id="results"></div>
-    </section>
-
-    <section class="card tab-panel" data-panel="bulk" hidden>
-      <div class="results-header">
-        <div>
-          <h2>All JDs × All resumes</h2>
-          <div class="selected-line">Score every resume against every JD. Top K applies per JD.</div>
-        </div>
-        <div class="controls">
-          <button id="bulk-rank-btn" title="Auto-selects top candidates per JD">▶ Rank all JDs</button>
-          <button id="bulk-refresh-btn" class="secondary">↻ Refresh matrix</button>
-        </div>
-      </div>
-      <div id="bulk-progress-wrap" class="progress-wrap" hidden>
-        <div class="progress-bar"><div id="bulk-progress-fill"></div></div>
-        <div id="bulk-progress-text" class="progress-text"></div>
-      </div>
-      <div id="matrix"></div>
     </section>
 
     <section class="card tab-panel" data-panel="reverse" hidden>
