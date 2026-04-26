@@ -1,20 +1,23 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
 _MODEL = None
 _MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-def model() -> SentenceTransformer:
+def model() -> TextEmbedding:
     global _MODEL
     if _MODEL is None:
-        _MODEL = SentenceTransformer(_MODEL_NAME)
+        _MODEL = TextEmbedding(model_name=_MODEL_NAME)
     return _MODEL
 
 
 def embed(texts: list[str]) -> np.ndarray:
-    vecs = model().encode(texts, normalize_embeddings=True, show_progress_bar=False)
-    return np.asarray(vecs, dtype=np.float32)
+    vecs = list(model().embed(texts))
+    arr = np.asarray(vecs, dtype=np.float32)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return arr / norms
 
 
 def cosine_topk(jd_vec: np.ndarray, resume_vecs: np.ndarray, k: int) -> list[tuple[int, float]]:
