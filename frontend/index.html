@@ -52,7 +52,13 @@
       </div>
     </section>
 
-    <section class="card results-card">
+    <nav class="tabs">
+      <button class="tab active" data-tab="per-jd">Per-JD ranking</button>
+      <button class="tab" data-tab="bulk">All JDs × All resumes</button>
+      <button class="tab" data-tab="reverse">Best JDs for a resume</button>
+    </nav>
+
+    <section class="card results-card tab-panel" data-panel="per-jd">
       <div class="results-header">
         <div>
           <h2>Ranking Results</h2>
@@ -75,6 +81,40 @@
 
       <div id="status" class="status"></div>
       <div id="results"></div>
+    </section>
+
+    <section class="card tab-panel" data-panel="bulk" hidden>
+      <div class="results-header">
+        <div>
+          <h2>All JDs × All resumes</h2>
+          <div class="selected-line">Score every resume against every JD. Top K applies per JD.</div>
+        </div>
+        <div class="controls">
+          <label>Top K
+            <input type="number" id="bulk-top-k" value="10" min="1" max="500">
+          </label>
+          <button id="bulk-rank-btn">▶ Rank all JDs</button>
+          <button id="bulk-refresh-btn" class="secondary">↻ Refresh matrix</button>
+        </div>
+      </div>
+      <div id="bulk-progress-wrap" class="progress-wrap" hidden>
+        <div class="progress-bar"><div id="bulk-progress-fill"></div></div>
+        <div id="bulk-progress-text" class="progress-text"></div>
+      </div>
+      <div id="matrix"></div>
+    </section>
+
+    <section class="card tab-panel" data-panel="reverse" hidden>
+      <div class="results-header">
+        <div>
+          <h2>Best JDs for a resume</h2>
+          <div class="selected-line">Pick a resume to see which open JDs they match best.</div>
+        </div>
+        <div class="controls">
+          <select id="reverse-select"><option value="">-- pick a resume --</option></select>
+        </div>
+      </div>
+      <div id="reverse-results"></div>
     </section>
   </main>
 

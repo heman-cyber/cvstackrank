@@ -223,6 +223,72 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+@app.post("/api/rank-all/stream")
+def rank_all_stream(top_k: int | None = None):
+    jds = storage.all_jds()
+    resumes = storage.all_with_embeddings("resumes")
+    if not jds:
+        raise HTTPException(400, "No JDs uploaded")
+    if not resumes:
+        raise HTTPException(400, "No resumes uploaded")
+
+    k = top_k or int(os.environ.get("TOP_K", "15"))
+    resume_vecs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in resumes])
+    total_pairs = sum(min(k, len(resumes)) for _ in jds)
+
+    def event_stream():
+        yield _sse("start", {
+            "jd_count": len(jds), "resume_count": len(resumes),
+            "top_k": k, "total_pairs": total_pairs,
+        })
+        completed = 0
+        for ji, jd in enumerate(jds, 1):
+            jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
+            pairs = embed.cosine_topk(jd_vec, resume_vecs, k)
+            yield _sse("jd_start", {
+                "jd_index": ji, "jd_id": jd["id"], "jd_filename": jd["filename"],
+                "shortlist": len(pairs),
+            })
+            for idx, sim in pairs:
+                r = resumes[idx]
+                try:
+                    llm = rank.score_resume_against_jd(jd["text"], r["text"])
+                except Exception as e:
+                    import traceback
+                    print(f"[cvstack] LLM error for {r['filename']} vs {jd['filename']}: {e}")
+                    traceback.print_exc()
+                    llm = {"score": 0, "verdict": "Weak Match", "confidence": "Low",
+                           "summary": f"Scoring error: {e}",
+                           "red_flags": [f"LLM call failed: {type(e).__name__}: {e}"]}
+                storage.upsert_score(jd["id"], r["id"], sim, llm)
+                completed += 1
+                yield _sse("pair", {
+                    "completed": completed, "total": total_pairs,
+                    "jd_id": jd["id"], "jd_filename": jd["filename"],
+                    "resume_id": r["id"], "resume_filename": r["filename"],
+                    "score": llm.get("score", 0), "verdict": llm.get("verdict", ""),
+                })
+            yield _sse("jd_done", {"jd_id": jd["id"], "jd_index": ji})
+        yield _sse("done", {"total": completed})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/matrix")
+def matrix(top_n: int = 5):
+    return {"matrix": storage.matrix_summary(top_n=top_n)}
+
+
+@app.get("/api/resume/{resume_id}/best-jds")
+def best_jds(resume_id: int):
+    r = storage.get_doc("resumes", resume_id)
+    if not r:
+        raise HTTPException(404)
+    return {"resume_id": resume_id, "filename": r["filename"],
+            "results": storage.best_jds_for_resume(resume_id)}
+
+
 @app.get("/api/results/{jd_id}")
 def results(jd_id: int):
     jd = storage.get_doc("jds", jd_id)

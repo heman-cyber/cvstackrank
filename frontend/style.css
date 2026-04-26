@@ -169,6 +169,35 @@ details.result-row > *:last-child { padding-bottom: 14px; }
 
 .recommend { margin-top: 12px; padding: 10px 12px; background: #eff6ff; border-left: 3px solid #2563eb; border-radius: 4px; font-size: 13px; color: #1e293b; }
 .recommend strong { color: #1e40af; }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
+.tab {
+  background: transparent; border: none; padding: 10px 16px; font-size: 13px;
+  color: #64748b; cursor: pointer; border-bottom: 2px solid transparent;
+  font-weight: 500; transition: all .12s;
+}
+.tab:hover { color: #1e293b; }
+.tab.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
+
+table.matrix { width: 100%; border-collapse: separate; border-spacing: 4px; margin-top: 12px; }
+table.matrix thead th {
+  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+  color: #94a3b8; padding: 6px 8px; font-weight: 600;
+}
+table.matrix .jd-col { width: 240px; padding: 10px 12px; background: #f8fafc; border-radius: 8px; vertical-align: top; font-size: 13px; }
+table.matrix .jd-col a { font-size: 11px; color: #2563eb; text-decoration: none; }
+table.matrix .jd-col a:hover { text-decoration: underline; }
+table.matrix .cell {
+  padding: 10px 8px; border-radius: 8px; text-align: center; vertical-align: top;
+  min-width: 110px; transition: transform .1s;
+}
+table.matrix .cell:hover { transform: scale(1.03); }
+table.matrix .cell-score { font-size: 18px; font-weight: 700; line-height: 1; }
+table.matrix .cell-name { font-size: 11px; opacity: .85; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
+table.matrix .empty-cell { background: #f1f5f9; color: #cbd5e1; font-weight: 500; }
+table.matrix .s-high .cell-score, table.matrix .s-mid .cell-score, table.matrix .s-low .cell-score { color: #fff; }
+
+#reverse-select { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; min-width: 280px; }
 .actions { margin-top: 8px; }
 .actions a { font-size: 12px; color: #2563eb; text-decoration: none; margin-right: 12px; }
 .actions a:hover { text-decoration: underline; }

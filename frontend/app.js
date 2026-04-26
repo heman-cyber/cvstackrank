@@ -318,5 +318,187 @@ function escape(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// ----- Tabs -----
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tab-panel").forEach(p => {
+      p.hidden = p.dataset.panel !== btn.dataset.tab;
+    });
+    if (btn.dataset.tab === "bulk") loadMatrix();
+    if (btn.dataset.tab === "reverse") loadReverseSelect();
+  });
+});
+
+// ----- Bulk rank -----
+$("#bulk-rank-btn").addEventListener("click", () => {
+  const k = Number($("#bulk-top-k").value) || 10;
+  $("#bulk-rank-btn").disabled = true;
+  $("#bulk-progress-wrap").hidden = false;
+  $("#bulk-progress-fill").style.width = "0%";
+  $("#bulk-progress-text").textContent = "Starting…";
+  $("#matrix").innerHTML = "";
+
+  const es = new EventSource(`/api/rank-all/stream?top_k=${k}`, { withCredentials: false });
+  // EventSource doesn't support POST natively; we use GET-style with fetch streaming instead.
+  es.close();
+  bulkRankFetch(k);
+});
+
+async function bulkRankFetch(k) {
+  try {
+    const r = await fetch(`/api/rank-all/stream?top_k=${k}`, { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    let totalPairs = 1;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop();
+      for (const block of events) {
+        const ev = parseSSE(block);
+        if (!ev) continue;
+        if (ev.event === "start") {
+          totalPairs = ev.data.total_pairs || 1;
+          $("#bulk-progress-text").textContent = `Scoring ${ev.data.jd_count} JDs × top ${ev.data.top_k} resumes (${totalPairs} pair-evaluations)…`;
+        } else if (ev.event === "jd_start") {
+          $("#bulk-progress-text").textContent = `JD ${ev.data.jd_index}: ${ev.data.jd_filename} (shortlist of ${ev.data.shortlist})`;
+        } else if (ev.event === "pair") {
+          const pct = Math.round((ev.data.completed / totalPairs) * 100);
+          $("#bulk-progress-fill").style.width = pct + "%";
+          $("#bulk-progress-text").textContent = `${ev.data.completed}/${totalPairs} — ${ev.data.resume_filename} vs ${ev.data.jd_filename} → ${ev.data.score} (${ev.data.verdict})`;
+        } else if (ev.event === "done") {
+          $("#bulk-progress-fill").style.width = "100%";
+          $("#bulk-progress-text").textContent = `✓ Done. Scored ${ev.data.total} pairs.`;
+          await loadMatrix();
+          toast(`Bulk ranking complete — ${ev.data.total} pairs scored`, "success");
+        }
+      }
+    }
+  } catch (e) {
+    toast(`Bulk rank failed: ${e.message}`, "error");
+  } finally {
+    $("#bulk-rank-btn").disabled = false;
+    setTimeout(() => { $("#bulk-progress-wrap").hidden = true; }, 3000);
+  }
+}
+
+function parseSSE(block) {
+  const lines = block.split("\n");
+  let event = "message", data = "";
+  for (const l of lines) {
+    if (l.startsWith("event: ")) event = l.slice(7).trim();
+    else if (l.startsWith("data: ")) data += l.slice(6);
+  }
+  if (!data) return null;
+  try { return { event, data: JSON.parse(data) }; } catch { return null; }
+}
+
+$("#bulk-refresh-btn").addEventListener("click", loadMatrix);
+
+async function loadMatrix() {
+  try {
+    const data = await api(`/api/matrix?top_n=5`);
+    renderMatrix(data.matrix);
+  } catch (e) {
+    toast(`Could not load matrix: ${e.message}`, "error");
+  }
+}
+
+function renderMatrix(rows) {
+  const root = $("#matrix");
+  if (!rows.length) { root.innerHTML = `<p class="empty">No JDs uploaded.</p>`; return; }
+  const allScored = rows.some(r => r.top.length > 0);
+  if (!allScored) {
+    root.innerHTML = `<p class="empty">No rankings yet. Click <strong>Rank all JDs</strong> to score every resume against every JD.</p>`;
+    return;
+  }
+  root.innerHTML = `
+    <table class="matrix">
+      <thead>
+        <tr><th class="jd-col">Job description</th><th>Top match</th><th>#2</th><th>#3</th><th>#4</th><th>#5</th></tr>
+      </thead>
+      <tbody>
+        ${rows.map(row => {
+          const cells = [0,1,2,3,4].map(i => {
+            const t = row.top[i];
+            if (!t) return `<td class="cell empty-cell">—</td>`;
+            return `<td class="cell ${scoreClass(t.llm_score)}" title="${escape(t.filename)} — ${escape(t.verdict||"")}">
+              <div class="cell-score">${t.llm_score}</div>
+              <div class="cell-name">${escape(t.filename)}</div>
+            </td>`;
+          }).join("");
+          return `<tr><td class="jd-col"><strong>${escape(row.jd_filename)}</strong><br><a href="#" data-jd="${row.jd_id}" class="jd-link">view detail →</a></td>${cells}</tr>`;
+        }).join("")}
+      </tbody>
+    </table>`;
+  root.querySelectorAll(".jd-link").forEach(a => a.addEventListener("click", (e) => {
+    e.preventDefault();
+    const jdId = Number(a.dataset.jd);
+    document.querySelector('.tab[data-tab="per-jd"]').click();
+    selectJd(jdId);
+  }));
+}
+
+// ----- Reverse lookup -----
+async function loadReverseSelect() {
+  const docs = await api("/api/list/resumes");
+  const sel = $("#reverse-select");
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">-- pick a resume --</option>` +
+    docs.map(d => `<option value="${d.id}">${escape(d.filename)}</option>`).join("");
+  sel.value = cur;
+}
+
+$("#reverse-select").addEventListener("change", async (e) => {
+  const id = Number(e.target.value);
+  const root = $("#reverse-results");
+  if (!id) { root.innerHTML = ""; return; }
+  try {
+    const data = await api(`/api/resume/${id}/best-jds`);
+    if (!data.results.length) {
+      root.innerHTML = `<p class="empty">No JD scores yet for <strong>${escape(data.filename)}</strong>. Run <em>All JDs × All resumes</em> first.</p>`;
+      return;
+    }
+    root.innerHTML = `<h3 style="margin:6px 0 14px; font-size:14px; color:#475569">JDs ranked for: <strong>${escape(data.filename)}</strong></h3>` +
+      data.results.map((r, i) => {
+        const r2 = { ...r, filename: r.filename, resume_id: id };
+        // reuse renderCandidate but treat it as a JD card
+        const score = r.llm_score ?? 0;
+        const conf = (r.confidence || "Medium").toLowerCase();
+        return `
+          <details class="result-row">
+            <summary class="result-head">
+              <span class="caret">▸</span>
+              <h3><span class="rank-num">#${i+1}</span> ${escape(r.filename)}</h3>
+              <span class="one-liner">${escape(r.summary || "")}</span>
+              <span class="head-pills">
+                <span class="conf conf-${conf}">${escape(r.confidence || "")}</span>
+                <span class="verdict ${verdictClass(r.verdict)}">${escape(r.verdict || "")}</span>
+                <span class="score-pill ${scoreClass(score)}">${score}</span>
+              </span>
+            </summary>
+            <div class="recommend"><strong>Recommendation:</strong> ${escape(r.recommendation || "—")}</div>
+            <div class="actions">
+              <a href="/api/file/jds/${r.jd_id}" target="_blank">📄 Open JD</a>
+              <a href="#" data-jd="${r.jd_id}" class="jd-link-rev">view full ranking for this JD →</a>
+            </div>
+          </details>`;
+      }).join("");
+    root.querySelectorAll(".jd-link-rev").forEach(a => a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const jdId = Number(a.dataset.jd);
+      document.querySelector('.tab[data-tab="per-jd"]').click();
+      selectJd(jdId);
+    }));
+  } catch (e) {
+    toast(`Failed: ${e.message}`, "error");
+  }
+});
+
 refresh("jds");
 refresh("resumes");

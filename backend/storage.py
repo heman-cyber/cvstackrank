@@ -136,6 +136,51 @@ def results_for_jd(jd_id: int) -> list[dict]:
         return out
 
 
+def matrix_summary(top_n: int = 5) -> list[dict]:
+    """For each JD, return top N candidates with scores."""
+    with conn() as c:
+        jds = c.execute("SELECT id, filename FROM jds ORDER BY id").fetchall()
+        out = []
+        for jd in jds:
+            rows = c.execute(
+                """SELECT s.resume_id, s.llm_score, s.verdict, s.embed_score, r.filename
+                   FROM scores s JOIN resumes r ON r.id = s.resume_id
+                   WHERE s.jd_id = ? AND s.llm_score IS NOT NULL
+                   ORDER BY s.llm_score DESC LIMIT ?""",
+                (jd["id"], top_n),
+            ).fetchall()
+            out.append({
+                "jd_id": jd["id"], "jd_filename": jd["filename"],
+                "top": [dict(r) for r in rows],
+            })
+        return out
+
+
+def best_jds_for_resume(resume_id: int) -> list[dict]:
+    with conn() as c:
+        rows = c.execute(
+            """SELECT s.jd_id, s.llm_score, s.verdict, s.embed_score, j.filename, s.detail_json
+               FROM scores s JOIN jds j ON j.id = s.jd_id
+               WHERE s.resume_id = ? AND s.llm_score IS NOT NULL
+               ORDER BY s.llm_score DESC""",
+            (resume_id,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            detail = json.loads(d.pop("detail_json") or "{}")
+            d.update(detail)
+            out.append(d)
+        return out
+
+
+def all_jds() -> list[dict]:
+    with conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT id, filename, text, embedding FROM jds WHERE embedding IS NOT NULL"
+        ).fetchall()]
+
+
 def delete_doc(table: str, doc_id: int):
     with conn() as c:
         if table == "resumes":
