@@ -131,6 +131,39 @@ function wireDrop(zoneId, kind, labelId) {
 wireDrop("jd-drop", "jds", "jd-upload-label");
 wireDrop("resume-drop", "resumes", "resume-upload-label");
 
+$("#jd-paste-btn").addEventListener("click", () => {
+  const open = !$("#jd-paste-panel").hidden;
+  $("#jd-paste-panel").hidden = open;
+  if (!open) $("#jd-paste-title").focus();
+});
+$("#jd-paste-cancel").addEventListener("click", () => {
+  $("#jd-paste-panel").hidden = true;
+  $("#jd-paste-title").value = "";
+  $("#jd-paste-text").value = "";
+});
+$("#jd-paste-save").addEventListener("click", async () => {
+  const title = $("#jd-paste-title").value.trim();
+  const text = $("#jd-paste-text").value.trim();
+  if (text.length < 30) { toast("Paste at least 30 characters of JD text", "error"); return; }
+  $("#jd-paste-save").disabled = true;
+  try {
+    const res = await api("/api/paste/jd", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, text }),
+    });
+    toast(`✓ Saved JD: ${res.filename}`, "success");
+    $("#jd-paste-title").value = "";
+    $("#jd-paste-text").value = "";
+    $("#jd-paste-panel").hidden = true;
+    refresh("jds");
+  } catch (e) {
+    toast(`Failed: ${e.message}`, "error");
+  } finally {
+    $("#jd-paste-save").disabled = false;
+  }
+});
+
 $("#expand-all").addEventListener("click", () => {
   const all = document.querySelectorAll("#results details");
   const anyClosed = [...all].some(d => !d.open);
@@ -145,11 +178,10 @@ $("#export-btn").addEventListener("click", () => {
 
 $("#rank-btn").addEventListener("click", () => {
   if (!selectedJdId) return;
-  const k = Number($("#top-k").value) || 15;
-  startRanking(selectedJdId, k);
+  startRanking(selectedJdId);
 });
 
-function startRanking(jdId, k) {
+function startRanking(jdId) {
   $("#rank-btn").disabled = true;
   $("#results").innerHTML = "";
   $("#progress-wrap").hidden = false;
@@ -157,14 +189,14 @@ function startRanking(jdId, k) {
   $("#progress-text").textContent = "Starting…";
   setStatus("");
 
-  const es = new EventSource(`/api/rank/${jdId}/stream?top_k=${k}`);
+  const es = new EventSource(`/api/rank/${jdId}/stream`);
   const collected = [];
   let total = k;
 
   es.addEventListener("start", (ev) => {
     const d = JSON.parse(ev.data);
     total = d.total;
-    $("#progress-text").textContent = `Embedding shortlist done. Scoring ${d.total} of ${d.candidates_evaluated} resumes with Claude…`;
+    $("#progress-text").textContent = `Auto-selected top ${d.total} of ${d.candidates_evaluated} resumes. Scoring with Claude…`;
   });
 
   es.addEventListener("result", (ev) => {
@@ -332,22 +364,17 @@ document.querySelectorAll(".tab").forEach(btn => {
 
 // ----- Bulk rank -----
 $("#bulk-rank-btn").addEventListener("click", () => {
-  const k = Number($("#bulk-top-k").value) || 10;
   $("#bulk-rank-btn").disabled = true;
   $("#bulk-progress-wrap").hidden = false;
   $("#bulk-progress-fill").style.width = "0%";
   $("#bulk-progress-text").textContent = "Starting…";
   $("#matrix").innerHTML = "";
-
-  const es = new EventSource(`/api/rank-all/stream?top_k=${k}`, { withCredentials: false });
-  // EventSource doesn't support POST natively; we use GET-style with fetch streaming instead.
-  es.close();
-  bulkRankFetch(k);
+  bulkRankFetch();
 });
 
-async function bulkRankFetch(k) {
+async function bulkRankFetch() {
   try {
-    const r = await fetch(`/api/rank-all/stream?top_k=${k}`, { method: "POST" });
+    const r = await fetch(`/api/rank-all/stream`, { method: "POST" });
     if (!r.ok) throw new Error(await r.text());
     const reader = r.body.getReader();
     const dec = new TextDecoder();
@@ -364,7 +391,7 @@ async function bulkRankFetch(k) {
         if (!ev) continue;
         if (ev.event === "start") {
           totalPairs = ev.data.total_pairs || 1;
-          $("#bulk-progress-text").textContent = `Scoring ${ev.data.jd_count} JDs × top ${ev.data.top_k} resumes (${totalPairs} pair-evaluations)…`;
+          $("#bulk-progress-text").textContent = `Scoring ${ev.data.jd_count} JDs × auto-selected ~${ev.data.auto_k_avg} resumes each (${totalPairs} pair-evaluations)…`;
         } else if (ev.event === "jd_start") {
           $("#bulk-progress-text").textContent = `JD ${ev.data.jd_index}: ${ev.data.jd_filename} (shortlist of ${ev.data.shortlist})`;
         } else if (ev.event === "pair") {

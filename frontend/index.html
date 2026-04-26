@@ -30,7 +30,16 @@
             <input type="file" id="jd-files" multiple accept=".pdf,.docx,.txt,.md,.zip">
             <span>+ Upload JDs</span>
           </label>
-          <span class="drop-hint">or drag &amp; drop files / .zip here</span>
+          <button type="button" class="upload upload-alt" id="jd-paste-btn">📋 Paste JD text</button>
+          <span class="drop-hint">or drag &amp; drop files / .zip</span>
+        </div>
+        <div class="paste-panel" id="jd-paste-panel" hidden>
+          <input type="text" id="jd-paste-title" placeholder="JD title (e.g. Senior QA Automation Engineer)" />
+          <textarea id="jd-paste-text" placeholder="Paste the full job description here…" rows="8"></textarea>
+          <div class="paste-actions">
+            <button type="button" id="jd-paste-save" class="upload">Save JD</button>
+            <button type="button" id="jd-paste-cancel" class="upload upload-alt">Cancel</button>
+          </div>
         </div>
         <div class="empty" id="jd-empty">No JDs uploaded yet.</div>
         <ul id="jd-list" class="doclist"></ul>
@@ -65,10 +74,7 @@
           <div class="selected-line" id="selected-line">Select a JD on the left to begin.</div>
         </div>
         <div class="controls">
-          <label>Top K
-            <input type="number" id="top-k" value="15" min="1" max="500">
-          </label>
-          <button id="rank-btn" disabled>▶ Rank candidates</button>
+          <button id="rank-btn" disabled title="Top candidates auto-selected based on bench size and JD similarity">▶ Rank candidates</button>
           <button id="export-btn" class="secondary" disabled title="Export results as CSV">⬇ Export CSV</button>
           <button id="expand-all" class="secondary" disabled>Expand all</button>
         </div>
@@ -90,10 +96,7 @@
           <div class="selected-line">Score every resume against every JD. Top K applies per JD.</div>
         </div>
         <div class="controls">
-          <label>Top K
-            <input type="number" id="bulk-top-k" value="10" min="1" max="500">
-          </label>
-          <button id="bulk-rank-btn">▶ Rank all JDs</button>
+          <button id="bulk-rank-btn" title="Auto-selects top candidates per JD">▶ Rank all JDs</button>
           <button id="bulk-refresh-btn" class="secondary">↻ Refresh matrix</button>
         </div>
       </div>

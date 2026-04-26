@@ -99,6 +99,23 @@ async def upload(kind: Literal["resumes", "jds"], files: list[UploadFile] = File
     return {"saved": saved, "errors": errors}
 
 
+@app.post("/api/paste/jd")
+async def paste_jd(payload: dict):
+    title = (payload.get("title") or "").strip() or "Pasted JD"
+    text = (payload.get("text") or "").strip()
+    if len(text) < 30:
+        raise HTTPException(400, "Text too short (min 30 chars)")
+    safe = "".join(c for c in title if c.isalnum() or c in " ._-")[:80].strip() or "Pasted JD"
+    filename = f"{safe}.txt"
+    stored_name = f"{uuid.uuid4().hex}.txt"
+    stored_path = storage.JDS_DIR / stored_name
+    stored_path.write_text(text, encoding="utf-8")
+    doc_id = storage.insert_doc("jds", filename, str(stored_path), text)
+    vec = embed.embed([text])[0]
+    storage.set_embedding("jds", doc_id, vec.tobytes())
+    return {"id": doc_id, "filename": filename}
+
+
 @app.get("/api/list/{kind}")
 def list_kind(kind: Literal["resumes", "jds"]):
     return storage.list_docs(kind)
@@ -178,15 +195,15 @@ def rank_stream(jd_id: int, top_k: int | None = None):
     if not resumes:
         raise HTTPException(400, "No resumes uploaded")
 
-    k = top_k or int(os.environ.get("TOP_K", "15"))
     jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
     resume_vecs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in resumes])
+    k = top_k or embed.auto_k(jd_vec, resume_vecs)
     pairs = embed.cosine_topk(jd_vec, resume_vecs, k)
 
     def event_stream():
         yield _sse("start", {
             "jd_id": jd_id, "jd_filename": jd["filename"],
-            "total": len(pairs), "candidates_evaluated": len(resumes),
+            "total": len(pairs), "candidates_evaluated": len(resumes), "auto_k": k,
         })
         for i, (idx, sim) in enumerate(pairs, 1):
             r = resumes[idx]
@@ -232,17 +249,22 @@ def rank_all_stream(top_k: int | None = None):
     if not resumes:
         raise HTTPException(400, "No resumes uploaded")
 
-    k = top_k or int(os.environ.get("TOP_K", "15"))
     resume_vecs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in resumes])
-    total_pairs = sum(min(k, len(resumes)) for _ in jds)
+    # precompute per-JD K (auto unless overridden)
+    jd_ks = []
+    for jd in jds:
+        jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
+        jd_ks.append(top_k or embed.auto_k(jd_vec, resume_vecs))
+    total_pairs = sum(jd_ks)
 
     def event_stream():
         yield _sse("start", {
             "jd_count": len(jds), "resume_count": len(resumes),
-            "top_k": k, "total_pairs": total_pairs,
+            "auto_k_avg": round(sum(jd_ks) / len(jd_ks), 1) if jd_ks else 0,
+            "total_pairs": total_pairs,
         })
         completed = 0
-        for ji, jd in enumerate(jds, 1):
+        for ji, (jd, k) in enumerate(zip(jds, jd_ks), 1):
             jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
             pairs = embed.cosine_topk(jd_vec, resume_vecs, k)
             yield _sse("jd_start", {

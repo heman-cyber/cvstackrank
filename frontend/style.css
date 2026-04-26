@@ -88,6 +88,17 @@ main { padding: 24px; max-width: 1400px; margin: 0 auto; }
 }
 .dropzone.dragging { border-color: #2563eb; background: #eff6ff; }
 .drop-hint { color: #94a3b8; font-size: 12px; }
+.upload.upload-alt { background: #fff; color: #2563eb; border: 1px solid #cbd5e1; }
+.upload.upload-alt:hover { background: #f8fafc; border-color: #2563eb; }
+
+.paste-panel { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; }
+.paste-panel input[type="text"], .paste-panel textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px;
+  font-family: inherit; font-size: 13px; resize: vertical;
+}
+.paste-panel textarea { min-height: 140px; }
+.paste-panel input[type="text"]:focus, .paste-panel textarea:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,.15); }
+.paste-actions { display: flex; gap: 8px; }
 
 details.result-row { padding: 0; cursor: default; }
 details.result-row > summary {
