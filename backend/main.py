@@ -1,0 +1,288 @@
+import json
+import os
+import shutil
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from . import embed, parser, rank, storage
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+storage.init_db()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("[cvstack] preloading embedding model…")
+    embed.model()
+    print("[cvstack] ready.")
+    yield
+
+
+app = FastAPI(title="cvstack", lifespan=lifespan)
+
+ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = ROOT / "frontend"
+
+
+@app.get("/")
+def index():
+    return FileResponse(FRONTEND_DIR / "index.html")
+
+
+SUPPORTED_EXTS = {".pdf", ".docx", ".txt", ".md"}
+
+
+def _ingest_one(table: str, target_dir: Path, original_name: str, data: bytes,
+                saved: list, errors: list):
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in SUPPORTED_EXTS:
+        errors.append({"filename": original_name, "error": f"Unsupported type {suffix}"})
+        return
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    stored_path = target_dir / stored_name
+    stored_path.write_bytes(data)
+    try:
+        text = parser.extract_text(stored_path)
+        if not text or len(text) < 30:
+            errors.append({"filename": original_name, "error": "Empty/unreadable text"})
+            stored_path.unlink(missing_ok=True)
+            return
+        doc_id = storage.insert_doc(table, original_name, str(stored_path), text)
+        vec = embed.embed([text])[0]
+        storage.set_embedding(table, doc_id, vec.tobytes())
+        saved.append({"id": doc_id, "filename": original_name})
+    except Exception as e:
+        errors.append({"filename": original_name, "error": str(e)})
+        stored_path.unlink(missing_ok=True)
+
+
+@app.post("/api/upload/{kind}")
+async def upload(kind: Literal["resumes", "jds"], files: list[UploadFile] = File(...)):
+    import zipfile, io
+    target_dir = storage.RESUMES_DIR if kind == "resumes" else storage.JDS_DIR
+    saved, errors = [], []
+
+    for f in files:
+        suffix = Path(f.filename).suffix.lower()
+        try:
+            data = await f.read()
+            if suffix == ".zip":
+                try:
+                    zf = zipfile.ZipFile(io.BytesIO(data))
+                except zipfile.BadZipFile:
+                    errors.append({"filename": f.filename, "error": "Invalid ZIP archive"})
+                    continue
+                count = 0
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    inner_name = Path(member.filename).name
+                    if Path(inner_name).suffix.lower() not in SUPPORTED_EXTS:
+                        continue
+                    _ingest_one(kind, target_dir, inner_name, zf.read(member), saved, errors)
+                    count += 1
+                if count == 0:
+                    errors.append({"filename": f.filename, "error": "ZIP contained no supported files"})
+            else:
+                _ingest_one(kind, target_dir, f.filename, data, saved, errors)
+        except Exception as e:
+            errors.append({"filename": f.filename, "error": str(e)})
+
+    return {"saved": saved, "errors": errors}
+
+
+@app.get("/api/list/{kind}")
+def list_kind(kind: Literal["resumes", "jds"]):
+    return storage.list_docs(kind)
+
+
+@app.delete("/api/{kind}/{doc_id}")
+def delete_doc(kind: Literal["resumes", "jds"], doc_id: int):
+    doc = storage.get_doc(kind, doc_id)
+    if not doc:
+        raise HTTPException(404)
+    Path(doc["stored_path"]).unlink(missing_ok=True)
+    storage.delete_doc(kind, doc_id)
+    return {"ok": True}
+
+
+@app.get("/api/file/{kind}/{doc_id}")
+def get_file(kind: Literal["resumes", "jds"], doc_id: int):
+    doc = storage.get_doc(kind, doc_id)
+    if not doc:
+        raise HTTPException(404)
+    return FileResponse(doc["stored_path"], filename=doc["filename"])
+
+
+@app.get("/api/text/{kind}/{doc_id}")
+def get_text(kind: Literal["resumes", "jds"], doc_id: int):
+    doc = storage.get_doc(kind, doc_id)
+    if not doc:
+        raise HTTPException(404)
+    return {"id": doc["id"], "filename": doc["filename"], "text": doc["text"]}
+
+
+@app.post("/api/rank/{jd_id}")
+def rank_jd(jd_id: int, top_k: int | None = None):
+    jd = storage.get_doc("jds", jd_id)
+    if not jd:
+        raise HTTPException(404, "JD not found")
+    resumes = storage.all_with_embeddings("resumes")
+    if not resumes:
+        raise HTTPException(400, "No resumes uploaded")
+
+    k = top_k or int(os.environ.get("TOP_K", "15"))
+    jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
+    resume_vecs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in resumes])
+    pairs = embed.cosine_topk(jd_vec, resume_vecs, k)
+
+    results = []
+    for idx, sim in pairs:
+        r = resumes[idx]
+        try:
+            llm = rank.score_resume_against_jd(jd["text"], r["text"])
+        except Exception as e:
+            llm = {
+                "score": 0,
+                "verdict": "Weak Match",
+                "strengths": [],
+                "gaps": [f"LLM error: {e}"],
+                "summary": "",
+            }
+        storage.upsert_score(jd_id, r["id"], sim, llm)
+        results.append({
+            "resume_id": r["id"],
+            "filename": r["filename"],
+            "embed_score": sim,
+            **llm,
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return {"jd_id": jd_id, "jd_filename": jd["filename"], "top_k": k, "candidates_evaluated": len(resumes), "results": results}
+
+
+@app.get("/api/rank/{jd_id}/stream")
+def rank_stream(jd_id: int, top_k: int | None = None):
+    jd = storage.get_doc("jds", jd_id)
+    if not jd:
+        raise HTTPException(404, "JD not found")
+    resumes = storage.all_with_embeddings("resumes")
+    if not resumes:
+        raise HTTPException(400, "No resumes uploaded")
+
+    k = top_k or int(os.environ.get("TOP_K", "15"))
+    jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
+    resume_vecs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in resumes])
+    pairs = embed.cosine_topk(jd_vec, resume_vecs, k)
+
+    def event_stream():
+        yield _sse("start", {
+            "jd_id": jd_id, "jd_filename": jd["filename"],
+            "total": len(pairs), "candidates_evaluated": len(resumes),
+        })
+        for i, (idx, sim) in enumerate(pairs, 1):
+            r = resumes[idx]
+            try:
+                llm = rank.score_resume_against_jd(jd["text"], r["text"])
+            except Exception as e:
+                import traceback
+                print(f"[cvstack] LLM error for {r['filename']}: {e}")
+                traceback.print_exc()
+                llm = {
+                    "score": 0, "verdict": "Weak Match", "confidence": "Low",
+                    "candidate_snapshot": {}, "must_have_matches": [],
+                    "must_have_gaps": [{"requirement": "Scoring failed", "impact": "Critical", "note": str(e)}],
+                    "nice_to_have_matches": [], "skills_matched": [], "skills_missing": [],
+                    "experience_alignment": "", "domain_alignment": "",
+                    "red_flags": [f"LLM call failed: {type(e).__name__}: {e}"],
+                    "interview_focus_areas": [],
+                    "recommendation": "Could not score — see red flags.",
+                    "summary": f"Scoring error: {e}",
+                }
+            storage.upsert_score(jd_id, r["id"], sim, llm)
+            yield _sse("result", {
+                "i": i, "total": len(pairs),
+                "resume_id": r["id"], "filename": r["filename"],
+                "embed_score": sim, **llm,
+            })
+        yield _sse("done", {"jd_id": jd_id})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.get("/api/results/{jd_id}")
+def results(jd_id: int):
+    jd = storage.get_doc("jds", jd_id)
+    if not jd:
+        raise HTTPException(404)
+    return {"jd_id": jd_id, "jd_filename": jd["filename"], "results": storage.results_for_jd(jd_id)}
+
+
+@app.get("/api/export/{jd_id}.csv")
+def export_csv(jd_id: int):
+    import csv, io
+    jd = storage.get_doc("jds", jd_id)
+    if not jd:
+        raise HTTPException(404)
+    rows = storage.results_for_jd(jd_id)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([
+        "rank", "resume_filename", "score", "verdict", "confidence",
+        "current_role", "experience_years", "domain",
+        "primary_skills", "skills_matched", "skills_missing",
+        "must_have_matches", "must_have_gaps", "nice_to_haves",
+        "experience_alignment", "domain_alignment",
+        "red_flags", "interview_focus_areas",
+        "recommendation", "summary", "embed_similarity",
+    ])
+    for i, r in enumerate(rows, 1):
+        snap = r.get("candidate_snapshot") or {}
+        def joinl(items, fmt=str):
+            return " | ".join(fmt(x) for x in (items or []))
+        w.writerow([
+            i,
+            r.get("resume_filename", ""),
+            r.get("score") or r.get("llm_score") or "",
+            r.get("verdict", ""),
+            r.get("confidence", ""),
+            snap.get("current_role", ""),
+            snap.get("total_experience_years", ""),
+            snap.get("domain_background", ""),
+            joinl(snap.get("primary_skills")),
+            joinl(r.get("skills_matched")),
+            joinl(r.get("skills_missing")),
+            joinl(r.get("must_have_matches"), lambda m: f"{m.get('requirement','')}: {m.get('evidence','')}"),
+            joinl(r.get("must_have_gaps"), lambda g: f"[{g.get('impact','')}] {g.get('requirement','')}: {g.get('note','')}"),
+            joinl(r.get("nice_to_have_matches")),
+            r.get("experience_alignment", ""),
+            r.get("domain_alignment", ""),
+            joinl(r.get("red_flags")),
+            joinl(r.get("interview_focus_areas")),
+            r.get("recommendation", ""),
+            r.get("summary", ""),
+            f"{r.get('embed_score') or 0:.4f}",
+        ])
+    csv_data = "\ufeff" + buf.getvalue()  # BOM for Excel
+    safe = "".join(c for c in jd["filename"] if c.isalnum() or c in "._-")[:50] or f"jd{jd_id}"
+    return StreamingResponse(
+        iter([csv_data]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="cvstack_{safe}.csv"'},
+    )
+
+
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")

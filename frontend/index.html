@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cvstack — resume ↔ JD ranker</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>cvstack</h1>
+      <p class="tag">Stack-rank resumes against job descriptions.</p>
+    </div>
+    <div class="header-stats">
+      <div class="stat"><div class="stat-num" id="jd-count">0</div><div class="stat-label">JDs</div></div>
+      <div class="stat"><div class="stat-num" id="resume-count">0</div><div class="stat-label">Resumes</div></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="grid-two">
+      <div class="card">
+        <div class="card-head">
+          <h2>Job Descriptions</h2>
+          <span class="hint" id="jd-hint">Pick one to rank against</span>
+        </div>
+        <div class="dropzone" id="jd-drop">
+          <label class="upload" id="jd-upload-label">
+            <input type="file" id="jd-files" multiple accept=".pdf,.docx,.txt,.md,.zip">
+            <span>+ Upload JDs</span>
+          </label>
+          <span class="drop-hint">or drag &amp; drop files / .zip here</span>
+        </div>
+        <div class="empty" id="jd-empty">No JDs uploaded yet.</div>
+        <ul id="jd-list" class="doclist"></ul>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Resumes</h2>
+          <span class="hint">Bench candidates</span>
+        </div>
+        <div class="dropzone" id="resume-drop">
+          <label class="upload" id="resume-upload-label">
+            <input type="file" id="resume-files" multiple accept=".pdf,.docx,.txt,.md,.zip">
+            <span>+ Upload Resumes</span>
+          </label>
+          <span class="drop-hint">or drag &amp; drop files / .zip here</span>
+        </div>
+        <div class="empty" id="resume-empty">No resumes uploaded yet.</div>
+        <ul id="resume-list" class="doclist"></ul>
+      </div>
+    </section>
+
+    <section class="card results-card">
+      <div class="results-header">
+        <div>
+          <h2>Ranking Results</h2>
+          <div class="selected-line" id="selected-line">Select a JD on the left to begin.</div>
+        </div>
+        <div class="controls">
+          <label>Top K
+            <input type="number" id="top-k" value="15" min="1" max="500">
+          </label>
+          <button id="rank-btn" disabled>▶ Rank candidates</button>
+          <button id="export-btn" class="secondary" disabled title="Export results as CSV">⬇ Export CSV</button>
+          <button id="expand-all" class="secondary" disabled>Expand all</button>
+        </div>
+      </div>
+
+      <div id="progress-wrap" class="progress-wrap" hidden>
+        <div class="progress-bar"><div id="progress-fill"></div></div>
+        <div id="progress-text" class="progress-text"></div>
+      </div>
+
+      <div id="status" class="status"></div>
+      <div id="results"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
