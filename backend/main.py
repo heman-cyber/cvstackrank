@@ -1,6 +1,8 @@
 import json
 import os
 import shutil
+import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -8,7 +10,7 @@ from typing import Literal
 
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -200,6 +202,91 @@ def rank_jd(jd_id: int, top_k: int | None = None):
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return {"jd_id": jd_id, "jd_filename": jd["filename"], "top_k": k, "candidates_evaluated": len(resumes), "results": results}
+
+
+# ---- background job queue (in-memory) ----
+JOBS: dict = {}
+JOBS_LOCK = threading.Lock()
+
+
+def _do_rank_job(job_id: str, jd: dict, resumes: list[dict], pairs: list[tuple[int, float]]):
+    try:
+        for i, (idx, sim) in enumerate(pairs, 1):
+            r = resumes[idx]
+            try:
+                llm = rank.score_resume_against_jd(jd["text"], r["text"])
+            except Exception as e:
+                import traceback
+                print(f"[cvstack] LLM error for {r['filename']}: {e}")
+                traceback.print_exc()
+                llm = {
+                    "score": 0, "verdict": "Weak Match", "confidence": "Low",
+                    "candidate_snapshot": {}, "must_have_matches": [],
+                    "must_have_gaps": [{"requirement": "Scoring failed", "impact": "Critical", "note": str(e)}],
+                    "nice_to_have_matches": [], "skills_matched": [], "skills_missing": [],
+                    "experience_alignment": "", "domain_alignment": "",
+                    "red_flags": [f"LLM call failed: {type(e).__name__}: {e}"],
+                    "interview_focus_areas": [],
+                    "recommendation": "Could not score — see red flags.",
+                    "summary": f"Scoring error: {e}",
+                }
+            storage.upsert_score(jd["id"], r["id"], sim, llm)
+            with JOBS_LOCK:
+                JOBS[job_id]["completed"] = i
+                JOBS[job_id]["last_filename"] = r["filename"]
+                JOBS[job_id]["last_score"] = llm.get("score", 0)
+                JOBS[job_id]["last_verdict"] = llm.get("verdict", "")
+        with JOBS_LOCK:
+            JOBS[job_id]["status"] = "done"
+            JOBS[job_id]["finished_at"] = time.time()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        with JOBS_LOCK:
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = str(e)
+
+
+@app.post("/api/rank/{jd_id}")
+def rank_jd(jd_id: int, top_k: int | None = None):
+    jd = storage.get_doc("jds", jd_id)
+    if not jd:
+        raise HTTPException(404, "JD not found")
+    resumes = storage.all_with_embeddings("resumes")
+    if not resumes:
+        raise HTTPException(400, "No resumes uploaded")
+
+    jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
+    resume_vecs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in resumes])
+    k = top_k or embed.auto_k(jd_vec, resume_vecs)
+    pairs = embed.cosine_topk(jd_vec, resume_vecs, k)
+
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "kind": "rank",
+            "jd_id": jd_id,
+            "jd_filename": jd["filename"],
+            "status": "running",
+            "total": len(pairs),
+            "completed": 0,
+            "candidates_evaluated": len(resumes),
+            "started_at": time.time(),
+        }
+    threading.Thread(target=_do_rank_job, args=(job_id, jd, resumes, pairs), daemon=True).start()
+    return {"job_id": job_id, "total": len(pairs), "candidates_evaluated": len(resumes), "auto_k": k}
+
+
+@app.get("/api/job/{job_id}")
+def get_job(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found (server may have restarted)")
+        snap = dict(job)
+    if snap.get("kind") == "rank" and snap.get("status") in ("running", "done"):
+        snap["partial_results"] = storage.results_for_jd(snap["jd_id"])
+    return snap
 
 
 @app.get("/api/rank/{jd_id}/stream")

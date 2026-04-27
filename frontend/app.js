@@ -187,65 +187,73 @@ $("#rank-btn").addEventListener("click", () => {
   startRanking(selectedJdId);
 });
 
-function startRanking(jdId) {
+async function startRanking(jdId) {
   $("#rank-btn").disabled = true;
   $("#results").innerHTML = "";
   $("#progress-wrap").hidden = false;
   $("#progress-fill").style.width = "0%";
   $("#progress-text").textContent = "Starting…";
-  setStatus("");
 
-  const es = new EventSource(`/api/rank/${jdId}/stream`);
-  const collected = [];
-  let total = k;
-
-  es.addEventListener("start", (ev) => {
-    const d = JSON.parse(ev.data);
-    total = d.total;
-    $("#progress-text").textContent = `Auto-selected top ${d.total} of ${d.candidates_evaluated} resumes. Scoring with Claude…`;
-  });
-
-  es.addEventListener("result", (ev) => {
-    const d = JSON.parse(ev.data);
-    collected.push(d);
-    const pct = Math.round((d.i / total) * 100);
-    $("#progress-fill").style.width = pct + "%";
-    $("#progress-text").textContent = `Scored ${d.i}/${total}: ${d.filename} → ${d.score} (${d.verdict})`;
-    collected.sort((a, b) => b.score - a.score);
-    renderResults(collected, null, false, total);
-  });
-
-  es.addEventListener("done", () => {
-    es.close();
-    $("#progress-fill").style.width = "100%";
-    $("#progress-text").textContent = `✓ Done. Scored ${collected.length} candidates.`;
-    setTimeout(() => { $("#progress-wrap").hidden = true; }, 2500);
+  let job;
+  try {
+    job = await api(`/api/rank/${jdId}`, { method: "POST" });
+  } catch (e) {
+    $("#progress-text").textContent = "Failed to start: " + e.message;
     $("#rank-btn").disabled = false;
-    toast(`Ranking complete — ${collected.length} candidates scored`, "success");
-  });
-
-  es.onerror = async () => {
-    es.close();
-    $("#rank-btn").disabled = false;
-    if (collected.length) {
-      $("#progress-text").textContent = `✓ Done (recovered ${collected.length} from server). `;
-    } else {
-      // Try fetching saved results from DB — request may have completed server-side
-      try {
-        const data = await api(`/api/results/${jdId}`);
-        if (data.results.length) {
-          const adapted = data.results.map(r => ({ ...r, score: r.llm_score, filename: r.resume_filename }));
-          renderResults(adapted, data.jd_filename, true);
-          $("#progress-text").textContent = `✓ Loaded ${data.results.length} cached results.`;
-          toast(`Loaded ${data.results.length} cached results`, "success");
-          return;
-        }
-      } catch {}
-      $("#progress-text").textContent = "Connection ended without results.";
-      toast("Ranking failed — check server logs", "error");
-    }
-  };
+    return;
+  }
+  $("#progress-text").textContent = `Auto-selected top ${job.auto_k} of ${job.candidates_evaluated} resumes. Scoring with Claude…`;
+  pollJob(job.job_id, job.total, jdId);
 }
+
+async function pollJob(jobId, total, jdId) {
+  let stalls = 0;
+  while (true) {
+    let snap;
+    try {
+      snap = await api(`/api/job/${jobId}`);
+    } catch (e) {
+      stalls++;
+      if (stalls > 5) {
+        $("#progress-text").textContent = "Lost connection to server. Refreshing results…";
+        await loadCachedResults(jdId);
+        $("#rank-btn").disabled = false;
+        return;
+      }
+      await sleep(2000);
+      continue;
+    }
+    stalls = 0;
+    const pct = Math.round((snap.completed / Math.max(snap.total, 1)) * 100);
+    $("#progress-fill").style.width = pct + "%";
+    if (snap.status === "running") {
+      $("#progress-text").textContent = `Scored ${snap.completed}/${snap.total}` +
+        (snap.last_filename ? `: ${snap.last_filename} → ${snap.last_score} (${snap.last_verdict})` : "");
+    }
+    // render partial results
+    if (snap.partial_results?.length) {
+      const adapted = snap.partial_results.map(r => ({ ...r, score: r.llm_score, filename: r.resume_filename }));
+      renderResults(adapted, null, false, snap.total);
+    }
+    if (snap.status === "done") {
+      $("#progress-fill").style.width = "100%";
+      $("#progress-text").textContent = `✓ Done. Scored ${snap.completed} candidates.`;
+      setTimeout(() => { $("#progress-wrap").hidden = true; }, 2500);
+      $("#rank-btn").disabled = false;
+      toast(`Ranking complete — ${snap.completed} candidates scored`, "success");
+      return;
+    }
+    if (snap.status === "error") {
+      $("#progress-text").textContent = `Job error: ${snap.error}`;
+      $("#rank-btn").disabled = false;
+      toast(`Ranking failed: ${snap.error}`, "error");
+      return;
+    }
+    await sleep(2000);
+  }
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function setStatus(msg) { $("#status").textContent = msg; }
 
