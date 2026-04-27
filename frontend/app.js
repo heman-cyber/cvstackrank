@@ -45,6 +45,34 @@ async function refresh(kind) {
     meta.textContent = `${Math.round(d.text_len / 100) / 10}k chars`;
     li.appendChild(meta);
 
+    if (kind === "resumes") {
+      const analyze = document.createElement("button");
+      analyze.className = "row-btn";
+      analyze.textContent = "▶ Analyze";
+      analyze.title = "Score this resume against the selected JD";
+      analyze.onclick = async (e) => {
+        e.stopPropagation();
+        if (!selectedJdId) { toast("Select a JD first", "error"); return; }
+        analyze.disabled = true;
+        analyze.textContent = "…scoring";
+        try {
+          const job = await api(`/api/score/${selectedJdId}/${d.id}`, { method: "POST" });
+          document.querySelector('.tab[data-tab="per-jd"]').click();
+          $("#progress-wrap").hidden = false;
+          $("#progress-fill").style.width = "0%";
+          $("#progress-text").textContent = `Scoring ${d.filename}…`;
+          $("#rank-btn").disabled = true;
+          await pollJob(job.job_id, 1, selectedJdId);
+        } catch (e2) {
+          toast(`Failed: ${e2.message}`, "error");
+        } finally {
+          analyze.disabled = false;
+          analyze.textContent = "▶ Analyze";
+        }
+      };
+      li.appendChild(analyze);
+    }
+
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "×"; del.title = "Delete";
     del.onclick = async (e) => {

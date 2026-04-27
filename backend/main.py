@@ -165,45 +165,6 @@ def get_text(kind: Literal["resumes", "jds"], doc_id: int):
     return {"id": doc["id"], "filename": doc["filename"], "text": doc["text"]}
 
 
-@app.post("/api/rank/{jd_id}")
-def rank_jd(jd_id: int, top_k: int | None = None):
-    jd = storage.get_doc("jds", jd_id)
-    if not jd:
-        raise HTTPException(404, "JD not found")
-    resumes = storage.all_with_embeddings("resumes")
-    if not resumes:
-        raise HTTPException(400, "No resumes uploaded")
-
-    k = top_k or int(os.environ.get("TOP_K", "15"))
-    jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
-    resume_vecs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in resumes])
-    pairs = embed.cosine_topk(jd_vec, resume_vecs, k)
-
-    results = []
-    for idx, sim in pairs:
-        r = resumes[idx]
-        try:
-            llm = rank.score_resume_against_jd(jd["text"], r["text"])
-        except Exception as e:
-            llm = {
-                "score": 0,
-                "verdict": "Weak Match",
-                "strengths": [],
-                "gaps": [f"LLM error: {e}"],
-                "summary": "",
-            }
-        storage.upsert_score(jd_id, r["id"], sim, llm)
-        results.append({
-            "resume_id": r["id"],
-            "filename": r["filename"],
-            "embed_score": sim,
-            **llm,
-        })
-
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return {"jd_id": jd_id, "jd_filename": jd["filename"], "top_k": k, "candidates_evaluated": len(resumes), "results": results}
-
-
 # ---- background job queue (in-memory) ----
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
@@ -245,6 +206,28 @@ def _do_rank_job(job_id: str, jd: dict, resumes: list[dict], pairs: list[tuple[i
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "error"
             JOBS[job_id]["error"] = str(e)
+
+
+@app.post("/api/score/{jd_id}/{resume_id}")
+def score_one(jd_id: int, resume_id: int):
+    jd = storage.get_doc("jds", jd_id)
+    r = storage.get_doc("resumes", resume_id)
+    if not jd or not r:
+        raise HTTPException(404)
+    jd_vec = np.frombuffer(jd["embedding"], dtype=np.float32)
+    r_vec = np.frombuffer(r["embedding"], dtype=np.float32)
+    sim = float(jd_vec @ r_vec)
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "kind": "rank", "jd_id": jd_id, "jd_filename": jd["filename"],
+            "status": "running", "total": 1, "completed": 0,
+            "candidates_evaluated": 1, "started_at": time.time(),
+        }
+    threading.Thread(
+        target=_do_rank_job, args=(job_id, jd, [r], [(0, sim)]), daemon=True,
+    ).start()
+    return {"job_id": job_id, "total": 1, "candidates_evaluated": 1, "auto_k": 1}
 
 
 @app.post("/api/rank/{jd_id}")
