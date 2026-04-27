@@ -8,7 +8,13 @@ async function api(path, opts = {}) {
 }
 
 async function refresh(kind) {
-  const docs = await api(`/api/list/${kind}`);
+  let docs;
+  try {
+    docs = await api(`/api/list/${kind}`);
+  } catch (e) {
+    toast(`Failed to load ${kind}: ${e.message}`, "error");
+    return;
+  }
   const ul = $(`#${kind === "resumes" ? "resume" : "jd"}-list`);
   const empty = $(`#${kind === "resumes" ? "resume" : "jd"}-empty`);
   $(`#${kind === "resumes" ? "resume" : "jd"}-count`).textContent = docs.length;
@@ -218,11 +224,26 @@ function startRanking(jdId) {
     toast(`Ranking complete — ${collected.length} candidates scored`, "success");
   });
 
-  es.onerror = () => {
+  es.onerror = async () => {
     es.close();
     $("#rank-btn").disabled = false;
-    $("#progress-text").textContent = "Connection ended.";
-    if (!collected.length) toast("Ranking failed — check server logs", "error");
+    if (collected.length) {
+      $("#progress-text").textContent = `✓ Done (recovered ${collected.length} from server). `;
+    } else {
+      // Try fetching saved results from DB — request may have completed server-side
+      try {
+        const data = await api(`/api/results/${jdId}`);
+        if (data.results.length) {
+          const adapted = data.results.map(r => ({ ...r, score: r.llm_score, filename: r.resume_filename }));
+          renderResults(adapted, data.jd_filename, true);
+          $("#progress-text").textContent = `✓ Loaded ${data.results.length} cached results.`;
+          toast(`Loaded ${data.results.length} cached results`, "success");
+          return;
+        }
+      } catch {}
+      $("#progress-text").textContent = "Connection ended without results.";
+      toast("Ranking failed — check server logs", "error");
+    }
   };
 }
 

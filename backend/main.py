@@ -32,9 +32,25 @@ ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = ROOT / "frontend"
 
 
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 @app.get("/")
 def index():
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html", headers=NO_CACHE_HEADERS)
+
+
+@app.middleware("http")
+async def no_cache_static(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(("/static/", "/api/")):
+        for k, v in NO_CACHE_HEADERS.items():
+            response.headers[k] = v
+    return response
 
 
 SUPPORTED_EXTS = {".pdf", ".docx", ".txt", ".md"}
